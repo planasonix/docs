@@ -1,0 +1,50 @@
+---
+title: "Query Iceberg and Parquet data from Aurora PostgreSQL"
+description: "Set up Amazon Aurora PostgreSQL aurora_analytics to query Planasonix lake destinations in place."
+---
+
+Planasonix can generate a `CREATE FOREIGN TABLE` statement for a successful Iceberg or S3 Parquet destination. Run the copied SQL yourself in your Aurora PostgreSQL database. **Planasonix never connects to your Aurora cluster or changes its configuration.**
+
+Aurora's `aurora_analytics` extension reads Parquet and Iceberg data from S3 without copying it into PostgreSQL. The foreign table is read-only; joins with local PostgreSQL tables use ordinary SQL. See AWS's [foreign table reference](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-analytics-foreign-tables.html).
+
+## Before you begin
+
+1. **Confirm engine support in your Region.** AWS currently documents Aurora PostgreSQL 17.11 or higher and 18.6 or higher for `aurora_analytics`. Check AWS's [Aurora analytics troubleshooting guidance](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-analytics-monitoring-troubleshooting.html) and your Region before upgrading or planning a rollout; support changes over time.
+2. **Grant the cluster read access to only the data it needs.** Create an IAM policy scoped to the relevant bucket prefixes, Glue table, or S3 Tables table. Create a role trusted by `rds.amazonaws.com`, attach the policy, then attach the role to your Aurora cluster with feature `AuroraAnalytics`. For an S3 directory or wildcard path, AWS requires `s3:GetObject` and `s3:ListBucket`; an Iceberg table in Glue requires `glue:GetTable` and S3 object access. SSE-KMS data also needs `kms:Decrypt` on its key. See AWS's [Aurora analytics prerequisites](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-analytics-prerequisites.html) and [least-privilege IAM examples](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-analytics-iam-policies-reference.html).
+3. **Provide network access.** For clusters in private subnets, configure VPC connectivity to S3 and, when using Glue, Glue. AWS recommends the corresponding S3 gateway and Glue interface endpoints.
+4. **Enable the extension at the cluster level.** In a custom DB cluster parameter group, set `aurora_analytics.enabled` to `true`. AWS documents this parameter as dynamic. If you must associate a new parameter group, that association can require a reboot.
+5. **Install the extension in each target database.** Connect to the database as a role with the required extension privilege and run:
+
+   ```sql
+   CREATE EXTENSION aurora_analytics;
+   ```
+
+   The extension creates the `aurora_analytics_server` foreign server. To create a foreign table, the database role needs `CREATE` on the target schema and `USAGE` on that server.
+
+## Generate and run the SQL
+
+After a successful Planasonix load, expand the destination node in Run History and open **Query from Aurora**. Enter the PostgreSQL schema and foreign table name, the exact S3 prefix or catalog ARN, and the AWS Region. Review the generated statement, copy it, then run it in your own Aurora client.
+
+For Parquet partition layouts, provide the directory or wildcard path Aurora should scan, for example:
+
+```sql
+CREATE FOREIGN TABLE "analytics"."orders" ()
+SERVER aurora_analytics_server
+OPTIONS (
+  location 's3://my-data-bucket/orders/*',
+  format 'parquet',
+  region 'us-east-1'
+);
+```
+
+The empty column list asks Aurora to infer columns and types from the Parquet metadata. For Iceberg, point to the table's actual Iceberg location (which must contain a `version-hint.text` or identify a metadata JSON file) or use its Glue/S3 Tables catalog ARN. A warehouse root alone may not identify an Iceberg table. AWS documents the location forms and format rules in [Working with foreign tables](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-analytics-foreign-tables.html).
+
+## Operational limits
+
+- Foreign tables are read-only. Writes and table changes happen through the source lake system; PostgreSQL `INSERT`, `UPDATE`, `DELETE`, and `TRUNCATE` are unsupported.
+- The first read can be cold and may take tens of seconds. Repeated reads may benefit from Aurora's local read cache.
+- Analytics queries share Aurora instance CPU and memory with application traffic. For heavy analytical work, AWS recommends using a reader instance. Monitor your workload before enabling broad access.
+- `aurora_analytics.query_mem` caps memory available to one analytics query. AWS derives a default from instance memory; increasing the cap can help a large query while reducing safe concurrency. Tune it for your workload, preferably at the narrowest useful scope, and check AWS's [configuration parameter guidance](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-analytics-configuration-parameters.html).
+- Keep the foreign table definition aligned with changes to the source schema. Aurora schema inference and supported type mappings have documented limitations.
+
+Aurora's behavior and supported engine versions can change. Confirm the current AWS documentation and your cluster's engine version before using the generated SQL in production.

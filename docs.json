@@ -54,6 +54,7 @@
               "nodes/z-order-sort",
               "managed-lakehouse/column-stats",
               "managed-lakehouse/catalog-sync",
+              "aurora/query-from-aurora",
               "managed-lakehouse/table-explorer",
               "nodes/managed-lakehouse-transforms"
             ]
@@ -265,7 +266,8 @@
             "group": "Billing",
             "pages": [
               "settings/plans-and-pricing",
-              "settings/usage"
+              "settings/usage",
+              "billing/analytics-pack-credits"
             ]
           }
         ]

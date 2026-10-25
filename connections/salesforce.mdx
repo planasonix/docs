@@ -5,21 +5,61 @@ description: "Connect Planasonix to Salesforce CRM."
 
 {/* GENERATED FROM docs/salesforce-connection-setup.md in the planasonix repo — DO NOT EDIT. */}
 
-Planasonix supports three ways to authenticate to a Salesforce org. This guide covers all three, the prerequisites they share, and what to do when Salesforce refuses a connection.
+Planasonix offers **two ways to authenticate** to a Salesforce org and **one transport option that combines with either**. This guide covers all of them, the prerequisites they share, and what to do when Salesforce refuses a connection.
 
 Every value in the JWT section was verified against a live Salesforce org. Anything not yet verified is marked **[unverified]** so you know where to spend your scepticism.
+
+**No statement currently carries that marker.** The one that did described mutual TLS as unbuilt. It was never re-checked when that stopped being true, so it went stale by becoming FALSE rather than by becoming verified — the marker told you to doubt a sentence whose problem was not doubt. A marker is a claim about this document's confidence, and it ages exactly like the claims it annotates.
+
+---
+
+## Quick start: Planasonix Connect (recommended)
+
+**Planasonix Connect is the Salesforce app Planasonix publishes, so you do not create an app of your own.** Your Salesforce admin installs it once per org; after that, anyone who may connect clicks **Connect with Salesforce** in Planasonix. It contains no code and no data: only the OAuth app that lets Planasonix ask your org for access.
+
+**Package version:** 0.1 (released). The links below install exactly that version.
+
+1. **A Salesforce admin installs it, once per org.** Open the link for your org type while signed in as an administrator:
+   - **Production or Developer Edition:** `https://login.salesforce.com/packaging/installPackage.apexp?p0=04tgK000000R0qLQAS`
+   - **Sandbox:** `https://test.salesforce.com/packaging/installPackage.apexp?p0=04tgK000000R0qLQAS`
+
+   Choose **Install for Admins Only** (or **Install for All Users**; the app's own policies still decide who may use it) and finish the install.
+2. **Leave the refresh token policy as installed, and plan to reconnect within 365 days.** The package installs the app with **Refresh Token Policy** set to **Expire refresh token after specific time**, 365 days. Do not change it. The installed app offers only *Immediately expire refresh token*, *Expire refresh token after specific time* and *Expire refresh token if not used for specific time*; there is no *valid until revoked* option. So plan to reconnect a **Connect with Salesforce** connection within 365 days of making it: open the connection in Planasonix and click **Reconnect**. Treat 365 days as the planning figure, not an exact date: Refresh Token Rotation, or an admin changing the policy, can make the real expiry differ. When the refresh token does expire, every scheduled sync on that connection fails until someone reconnects. Your org may also cap idle tokens (§6). For unattended pipelines that must never need re-authorising, use JWT Bearer, which issues no refresh token.
+3. **Choose the Salesforce user Planasonix acts as, and give it the access it needs.** Planasonix reads and writes as the user who approves the connection, so that user decides what Planasonix can see. Use a dedicated integration user, not a person: either a user with the *Salesforce Integration* user license and the *Salesforce API Only System Integrations* profile (or a clone of it), or a standard user whose profile or a permission set grants **API Enabled**. Then create a permission set of your own (Setup > Permission Sets) that grants **API Enabled** and **Read** on exactly the objects your pipelines use, and assign it to that user. Field-level security and sharing still apply. Do not grant Modify All Data. (Planasonix does not ship this permission set: a package cannot carry permissions on standard objects such as Account or Contact.)
+4. **Recommended: pre-authorize the integration user, so no one is shown an approval screen.** Without this, the first sign-in shows Salesforce's **Allow Access** screen, which can carry a security warning about the app. Pre-authorized users skip it; anyone not covered is refused. Two separate grants are involved: the permission set from step 3 gives the user API and object access, and *app authorization* lets that permission set use this app. Do them in this order, so no one is cut off:
+   1. **Authorize the permission set for this app.** In **Setup > External Client App Manager > Planasonix Connect > Edit Policies**, give the permission set from step 3 (or the integration user's profile) access to the app, and save. If your org shows no control for this, create the grant as in §4.4, which does not depend on the Permitted Users setting.
+   2. **Then switch the app to pre-authorization.** On the same screen, under **OAuth Policies**, set **Permitted Users** to **Admin approved users are pre-authorized**, and save. If the permission-set control only appears after this switch, make both changes in the same edit and save once.
+
+   Anyone not covered at the moment the switch is saved loses access. A user with the *Use Any API Client* permission can use the app regardless of this setting. To undo, set Permitted Users back to **All users may self-authorize**. These policy settings are per org: they do not change when Planasonix publishes a new package version.
+5. **In Planasonix:** New connection > Salesforce > **Connect with Salesforce**, choose Production or Sandbox, and sign in as that user.
+
+**Prefer your own app, or need JWT bearer or mutual TLS?** Those are the *Advanced* options in the Planasonix connection form, and the rest of this guide covers them.
 
 ---
 
 ## 1. Choose a method
 
-| Method | Best for | Needs a browser login? | Token expiry |
+**There are two authentication methods and they are both OAuth.** `urn:ietf:params:oauth:grant-type:jwt-bearer` is an OAuth 2.0 grant type, so "OAuth or JWT" names one protocol twice. What differs between them is who authorises, and whether a refresh token exists to expire.
+
+| Authentication | Best for | Needs a browser login? | Token expiry |
 |---|---|---|---|
 | **OAuth 2.0** (authorization code) | Quick setup, a person authorising their own access | Yes, once | Access token refreshes automatically; the refresh token itself can expire |
 | **OAuth 2.0 + JWT Bearer** | Unattended ETL with a service account — **recommended for scheduled pipelines** | No | A new token is minted per use; **nothing to expire** |
-| **Mutual TLS** | Orgs whose security policy requires client-certificate authentication | No | Same as the OAuth method it accompanies |
 
-**If you are automating scheduled data movement, choose JWT Bearer.** It issues no refresh token, so there is nothing that can quietly expire between runs and no re-authorisation to perform. The other methods depend on a refresh token that your org's policies may expire (see §6).
+**If you are automating scheduled data movement, choose JWT Bearer.** It issues no refresh token, so there is nothing that can quietly expire between runs and no re-authorisation to perform. The other method depends on a refresh token that your org's policies may expire (see §6).
+
+### Mutual TLS is not a third method
+
+**Mutual TLS is a transport option. You choose it *in addition to* one of the two methods above, never *instead of* either.** It is not an alternative way to log in, and a connection configured with a certificate and no credentials is not configured.
+
+The two layers answer different questions, which is why neither substitutes for the other:
+
+| Layer | What it authenticates | What happens if the other half is missing |
+|---|---|---|
+| The **OAuth method** | the *user* — which identity the session runs as | A certificate with no credentials behind it yields no session. The handshake can succeed and there is still nobody logged in. |
+| **Mutual TLS** | the *transport* — whether this client may open the connection at all | Credentials with no certificate are refused on port **8443** before any of them is read. The refusal is a TLS handshake failure, so it names no user and no token, and it will not look like a credentials problem. |
+
+Because they are separate layers, the Salesforce integration user needs permissions from **both**: `Enforce SSL/TLS Mutual Authentication` *and* API Only. Granting one without the other leaves a connection that fails at whichever layer was left out — see §5, where all four preconditions are listed.
 
 ---
 
@@ -65,7 +105,7 @@ Whichever licence you use:
 
 - **Profile:** `Minimum Access – API Only Integrations` for OAuth and JWT. For mutual TLS the user must also be **API Only** (§5), which is a profile setting rather than a licence one.
 - Grant object and field access through **permission sets** — Account, Contact, Opportunity, custom objects, and Bulk API operations as your pipelines require. Keep them separate from the profile so they can be changed without re-provisioning the user.
-- Add the `Salesforce API Integration` permission-set licence if you need its expanded object and system permissions.
+- **On a Salesforce Integration licence, assign the `Salesforce API Integration` permission-set licence (PSL).** Without it, CRM objects such as Account and Contact are not available to the integration user (measured on a sandbox, 2026-10-09). Then grant data access through a permission set whose **License is `Salesforce API Integration`**, with object **Read** (and **View All Records** if every record should be visible) **and field Read** — fields are not granted by default, and an object without field Read appears with columns missing.
 
 ### 2.3 Find your My Domain host — do not construct it
 
@@ -122,7 +162,7 @@ Planasonix generates an **RSA-2048 key pair for each connection** and gives you 
 
 A **self-signed certificate is sufficient** for this flow — the certificate verifies our signature, it does not establish a TLS identity. **You do not need a CA-issued certificate, a certificate chain, or a certificate purchase.**
 
-In Planasonix: create the connection, choose **JWT Bearer**, click **Generate Certificate**, then **Download Public Certificate**.
+In Planasonix: create the connection, open the **Your own app — JWT + certificate** tab, fill in **Consumer Key** and **Salesforce Username**, then click **Generate certificate** and download it. **Generate refuses until both fields are filled.** The Consumer Key does not exist until you create the app (§4.5), so type a placeholder now and paste the real key before you save (§4.6): sign-in reads the key from the saved connection, not from the certificate.
 
 ### 4.2 Create the app in Salesforce
 
@@ -144,7 +184,7 @@ Then, on the same screen:
 
 ### 4.3 OAuth settings
 
-**Callback URL** — required by Salesforce even though the JWT flow never redirects a browser. Use the callback URL shown on the Planasonix connection screen.
+**Callback URL** — required by Salesforce even though the JWT flow never redirects a browser. The JWT tab shows no callback URL because none is used; enter `https://login.salesforce.com/services/oauth2/success`.
 
 **OAuth Scopes — select BOTH of these:**
 
@@ -175,18 +215,16 @@ Some settings in this section may be locked by your org's security baseline and 
 
 An administrator testing with their own login will not hit this, because administrators bypass the check. **Every service account needs it.**
 
-**First**, on the app's **Policies** tab → **OAuth Policies** → **Plugin Policies** → **Permitted Users** → *Admin approved users are pre-authorized*, and save.
+Do the three parts in this order. Switching the app to pre-authorization refuses every user it does not already cover, so the grant comes before the switch.
 
-> The same setting is shown as **App Authorization** on the app's read-only detail summary and as **Permitted Users** on the edit form, under a section headed **Plugin Policies**. One setting, two names, two screens.
-
-**Then** create a permission set and assign it to the integration user:
+**First** create a permission set and assign it to the integration user:
 
 1. Setup → **Permission Sets** → **New**. Label it e.g. `Planasonix API Access`, License `--None--`.
 2. Setup → **Users** → your integration user → **Permission Set Assignments** → **Edit** → add it.
 
 **Then grant that permission set access to the app.** For a **Connected App** this is a button: the app → **Manage** → **Manage Permission Sets**.
 
-**For an External Client App there is no equivalent screen.** The grant exists in the data model and nothing surfaces it, so it must be created through the API. In the Developer Console → **Debug** → **Open Execute Anonymous Window**:
+**For an External Client App** use the app's **Policies** tab → **Edit** → **App Policies** → **Select Permission Sets**, and add the set (seen in a live setup on 2026-10-08; if the section is not visible, save the app's policies once and edit again). **If your org does not show that section**, the same grant can be created through the API. In the Developer Console → **Debug** → **Open Execute Anonymous Window**:
 
 ```apex
 // 1. find the app's Id
@@ -210,6 +248,10 @@ WHERE SetupEntityType = 'ExternalClientApplication'
 
 > **If your administrator will not run anonymous Apex**, the same record can be created through the Metadata API, or Salesforce Support can assist. We have raised the missing interface with Salesforce.
 
+**Last**, on the app's **Policies** tab → **OAuth Policies** → **Plugin Policies** → **Permitted Users** → *Admin approved users are pre-authorized*, and save. The grant above does not depend on this setting, so it can be made first.
+
+> The same setting is shown as **App Authorization** on the app's read-only detail summary and as **Permitted Users** on the edit form, under a section headed **Plugin Policies**. One setting, two names, two screens.
+
 **A note on what does not work**, so you do not spend time on it: setting Permitted Users to *All users may self-authorize* does not help, because self-authorisation requires the user to approve the app once in a browser — and an API-Only user cannot sign in to a browser. The `Use Any API Client` permission would bypass the check, but it is not present in every org and it grants far more than this app.
 
 ### 4.5 Get the Consumer Key
@@ -223,34 +265,199 @@ WHERE SetupEntityType = 'ExternalClientApplication'
 
 | Field | Value |
 |---|---|
-| Authentication | **JWT Bearer** |
-| Environment | Production or Sandbox |
-| **My Domain host** | from §2.3 — copied, not typed |
+| Tab | **Your own app — JWT + certificate** |
+| **Login type** | **Production**, **Sandbox**, or **My Domain** (then the host from §2.3 — copied, not typed). Production and Sandbox are both valid JWT audiences. |
 | **Username** | the integration user, from Setup → Users, **with the sandbox suffix if this is a sandbox** |
 | **Consumer Key** | from §4.5 |
 
-Click **Test Connection**.
+Click **Test Connection**, then **Save**. On releases where the test does not yet perform the JWT sign-in, a passing test only proves Salesforce is reachable; the proof that JWT works is that the **table list loads** after saving.
 
 ---
 
 ## 5. Mutual TLS
 
-Mutual TLS authenticates the *transport* with a client certificate, in addition to whichever method authenticates the *user*. Salesforce accepts mutual-auth connections on **port 8443**.
+Mutual TLS authenticates the **transport** with a client certificate, on top of whichever
+method authenticates the **user**. It does not replace OAuth or JWT — it runs underneath one
+of them.
 
-**Four things must be true before it can be enabled, and the fourth is the only way back out:**
+Salesforce serves mutual authentication on **port 8443 of your My Domain host**, not on the
+standard port (Salesforce Help, [Set Up a Mutual Authentication Certificate for API Login](https://help.salesforce.com/s/articleView?id=security_keys_uploading_mutual_auth_cert.htm&language=en_US&type=5)). A connection bound to mutual TLS reaches
+`https://<yourdomain>.my.salesforce.com:8443`, never `https://<yourdomain>.my.salesforce.com`. Planasonix
+switches the host and port for you when a certificate is bound; you do not configure it.
 
-1. The user must be on a **`Salesforce` or `Salesforce Platform` licence.** The `Enforce SSL/TLS Mutual Authentication` permission **cannot be held by a `Salesforce Integration` licence**, so a user on that licence can never satisfy condition 2 — get this right before creating the user (§2.2).
-2. The `Enforce SSL/TLS Mutual Authentication` permission must be **applied to the user** — it is under **System Permissions** on the profile or permission set. **A licence that *permits* a permission is not the same as the permission having been *granted*.**
-3. The user must be **API Only**, so that a compromised certificate cannot be used to sign in interactively.
-4. **An active, non-API-only administrator must exist who could turn it off again.** Without one, an org that stops being able to satisfy conditions 1–3 has no route back.
+### 5.1 The licence rule — settle this before creating anything
 
-**Certificate upload:** Setup → **Certificate and Key Management** → **Upload Mutual Authentication Certificate**.
+The Salesforce user your connection logs in as must hold a licence that **permits** the
+`Enforce SSL/TLS Mutual Authentication` permission.
 
-> **Salesforce has three separate certificate uploads and they are not interchangeable.** The mutual-auth certificate above · the JWT signing certificate from §4.3 · self-signed and CA-signed certificates for outbound calls. Uploading one in place of another fails in ways that do not name the mistake.
+| Licence | Mutual TLS | OAuth / JWT Bearer |
+|---|---|---|
+| `Salesforce` (full) | **Works** | Works |
+| `Salesforce Integration` | **Refused** — cannot hold the permission at all | **Works** |
+| `Salesforce Platform` | *Unverified — we have not tested it* | Unverified for mTLS |
 
-Unlike the JWT certificate, the mutual-TLS client certificate must be **issued by a certificate authority** and presented with its intermediate chain, leaf first.
+The Integration licence is the trap, because it is the right answer for the other two
+methods and the wrong one here. If you created an integration user for JWT Bearer (§2.2)
+and now want mutual TLS on the same user, **the licence has to change** — it is not a
+permission you can grant your way out of. Either move that user to a full `Salesforce`
+licence, or point the connection at a different user who already holds one.
 
-**[unverified]** Mutual TLS is not yet selectable in the Planasonix connection form. The transport, certificate storage and validation are built; the connection binding is not. The form will tell you when this changes.
+> A licence that *permits* a permission is not the same as the permission having been
+> *granted*. You need both. Planasonix checks them separately and names which one failed.
+
+### 5.2 What Planasonix checks before it will enable mutual TLS
+
+Enabling mutual TLS on the wrong account can lock your org out of its own Salesforce UI, so
+Planasonix refuses to enable it until it has checked the org and can say the way back out
+exists. The checks run against your org's real users at the moment you click Attach.
+
+**1 — We must be able to read your org's users.** The connection's user needs
+**View All Users**. Every other check is a statement about the whole user list, and without
+it there is nothing to check. This is not a judgement that anything is unsafe; it is that we
+could not look.
+
+**2 — The user must hold the mutual-auth permission.** `Enforce SSL/TLS Mutual
+Authentication`, under **System Permissions**, on either their profile or a permission set
+assigned to them. Either door works, and the permission set is usually the cheaper one.
+
+**3 — The user must be API Only.** Salesforce requires this. Its guidance on [Set Up a Mutual Authentication Certificate for API Login](https://help.salesforce.com/s/articleView?id=security_keys_uploading_mutual_auth_cert.htm&language=en_US&type=5)
+says to assign the permission to an API-only user account, and states:
+
+> This user must have the API Only User permission.
+
+Setting API Only ends UI login for that account
+**immediately**, whether or not mutual TLS is ever enabled — so set it on a dedicated
+integration account, never on a person's login. This is why check 6 exists.
+
+**4 — The profile must be dedicated to this user.** If the mutual-auth permission is carried
+by a profile that other users share, enabling it here would impose mutual TLS on all of
+them. Give the connection's user a profile of their own.
+
+**5 — The permission set must be assigned to this user only.** Same reason as the profile,
+one level down. If you granted the permission through a permission set, that set must not be
+assigned to anyone else.
+
+**6 — An administrator must be able to undo this.** An active, non-API-only administrator,
+other than the connection's user, who can remove the permission or delete the certificate.
+Because check 3 has just taken UI login away from the connection's user, this is the only
+route back if anything goes wrong.
+
+Check 6 is the one that often cannot be answered automatically. Salesforce has no single
+field that says "this person can turn mutual auth off", so Planasonix frequently finds it
+**undetermined** rather than false — which is not the same as finding that no such
+administrator exists. When that happens you confirm it yourself; see §5.5.
+
+### 5.3 Getting the certificate
+
+**Mutual TLS is the one flow where Planasonix does not generate the certificate for you.**
+Unlike JWT Bearer (§4.1), where we generate the key pair and hand you a certificate to
+upload, mutual TLS needs a certificate that Salesforce will trust as a TLS identity:
+
+- Use a certificate from a public certificate authority (CA), as Salesforce's guidance
+  describes ([Set Up a Mutual Authentication Certificate for API Login](https://help.salesforce.com/s/articleView?id=security_keys_uploading_mutual_auth_cert.htm&language=en_US&type=5)).
+- It must be presented **with its intermediate chain, leaf first**.
+- You supply the **private key and the chain** to Planasonix; the key goes straight into our
+  credential store and is never returned by any endpoint.
+
+In Planasonix: open the connection, go to the **Mutual TLS** panel, enter your **My Domain
+host** and paste the **PEM bundle** (private key followed by the certificate chain).
+
+### 5.4 Uploading the certificate in Salesforce
+
+Setup → **Certificate and Key Management** → **Upload Mutual Authentication Certificate**.
+
+**Deleting a mutual-auth certificate is not instant.** Salesforce's guidance notes that
+removing one can take **up to 5 minutes** to take effect. If you delete a certificate and
+connections keep succeeding, wait before concluding the deletion failed.
+
+> **Salesforce has three separate certificate uploads and they are not interchangeable:**
+> the mutual-auth certificate above · the JWT signing certificate from §4.3 · self-signed
+> and CA-signed certificates for outbound calls. Uploading one in place of another fails in
+> ways that do not name the mistake.
+
+### 5.5 When the recovery-admin check cannot be answered
+
+If every other check passes and only check 6 is undetermined, Planasonix shows a single
+button:
+
+> **An admin can undo this — attach anyway**
+
+Use it once you have confirmed in Salesforce that an active, non-API-only administrator
+other than the connection's user can remove the permission or delete the certificate. The
+button attaches immediately and records your reason in the audit log. The reason arrives
+filled in and you can edit it before clicking; clearing it disables the button, because an
+override with no stated reason is not an override we will record.
+
+**This confirmation covers check 6 and nothing else.** It is not available for any other
+refusal, and it does not skip checks 1–5.
+
+### 5.6 Troubleshooting — keyed on the code in the response
+
+Planasonix returns a machine-readable code with every refusal. Two surfaces report them
+slightly differently: the **connection panel** returns a `reasonCode`, and where the checks
+actually ran it adds a `preconditionCode` naming the specific condition. The **Settings
+preconditions checker** returns that same specific code directly.
+
+**`reasonCode` — what kind of answer you got**
+
+| Code | Meaning | What to do |
+|---|---|---|
+| `preconditions_refused` | The checks ran and one failed | Read `preconditionCode` in the table below |
+| `preconditions_recovery_admin_unevaluated` | Only check 6 is undetermined | §5.5 — confirm and use the button |
+| `preconditions_could_not_ask` | We could not read your users | Grant **View All Users**; check the credentials and the org |
+| `preconditions_org_enforces_mutual_auth` | Your org already enforces mutual auth, so Salesforce refused the user-list query itself before any check could run | Upload the certificate to this connection first (§5.3), then attach — the check can then present it. If one is already uploaded, confirm it is a certificate your org trusts for mutual authentication; the refusal is happening at the TLS layer, before any user is read |
+| `preconditions_unevaluated` | The checks could not reach a verdict | Supply whatever the message names; the override does not apply |
+| `certificate_not_available` | No certificate is stored for this connection | Upload one (§5.3) |
+| `certificate_refused` | The certificate itself was rejected | See the accompanying message — key/chain mismatch, expiry, or a missing chain |
+
+**`preconditionCode` — which condition failed**
+
+| Code | Meaning | What to do |
+|---|---|---|
+| `LICENSE_WITHHOLDS_MUTUAL_AUTH` | The licence cannot hold the permission — the Integration licence in every case seen so far | Move the user to a full `Salesforce` licence, or use a different user (§5.1) |
+| `LICENSE_UNSTATED` | The licence was not reported, so we cannot tell | Confirm the user's licence in Salesforce, then retry |
+| `MUTUAL_AUTH_NOT_HELD` | The user does not hold the permission by any route | Grant it on their profile or a permission set (check 2) |
+| `INTEGRATION_USER_NOT_API_ONLY` | The user is not API Only | Set API Only on that user (check 3) |
+| `PROFILE_SHARED` | The grant rides a profile other users share | Give the user a dedicated profile (check 4) |
+| `PERMISSION_SET_SHARED` | The permission set is assigned to more than one user | Restrict it to this user (check 5) |
+| `NO_RECOVERY_ADMIN` | We looked and found no usable recovery administrator | Create or activate one — this is a finding, not an undetermined result |
+| `INTEGRATION_USER_UNKNOWN` | The connection's user is not in the org's user list | Check the username on the connection |
+| `NO_CANDIDATES` | No users came back at all | Treat as `preconditions_could_not_ask` — the list was empty, so nothing was evaluated |
+| `UNKNOWN` | A condition with no assigned code | Report it; the message carries the detail |
+
+### 5.7 Sandboxes
+
+The My Domain host carries the sandbox name, and so does the username (§2.4). A sandbox
+connection reaches `https://<yourdomain>--<sandboxname>.sandbox.my.salesforce.com:8443`.
+
+**A sandbox is a separate Salesforce org.** Upload the certificate in the sandbox as well,
+and satisfy the checks in §5.2 there too — the licence, the permission, API Only, the
+dedicated profile, the permission set and the recovery administrator are all properties of
+that org's users, not of production's. A refresh recreates the sandbox from production, so
+expect to redo this after one.
+
+The form asks the server whether this deployment offers the method and withholds it if not, so an absent tab means the server reported it unavailable.
+
+---
+
+## 5a. The objects you see are the objects your integration user can query
+
+**If the table list looks short, this is almost always why, and it is not a fault.**
+
+Planasonix asks Salesforce which objects exist, and Salesforce answers **for the authenticated user**. Two connections to the same org, authenticating as different users, will list different objects — and a sandbox that is a copy of production can list far fewer than production does, because the copy's user is not the production user.
+
+**Measured against a sandbox org:** the same product returned **715** objects for one connection and **204** for another. Nothing was missing from the org and nothing was dropped in transit. The short list belonged to a user without read access to most objects.
+
+What Planasonix does with Salesforce's answer:
+
+- objects Salesforce marks **not queryable** are omitted — they cannot be read by any query, so listing them would offer you a table that always fails
+- **custom settings** are omitted — they are configuration rather than data
+
+Everything else Salesforce returns is shown.
+
+**If an object you expect is missing:** check the integration user's permissions in Salesforce (Setup → Users → the integration user → Profile or Permission Sets → **Object Settings**), not the Planasonix connection. It needs the `Salesforce API Integration` permission-set licence on an Integration licence, object **Read**, **and field Read** on the fields you want (§2.2). Then refresh the table list.
+
+**A related surprise:** a few objects refuse a plain unfiltered query and require a filter, so they can appear in the list and still fail when previewed. Salesforce names the object in the error when this happens. We have not mapped which objects are affected, so we are not publishing a list rather than publishing a wrong one — if you hit it, the error text is the reliable signal and is the thing to send us.
 
 ---
 
@@ -262,11 +469,11 @@ For **OAuth 2.0**, your connection depends on a refresh token, and three Salesfo
 
 | Setting | Effect |
 |---|---|
-| **Refresh Token Policy** | *Refresh token is valid until revoked* is the durable choice. *Expire refresh token after N* / *if not used for N* will eventually break an unattended connection. |
-| **Limit Idle Refresh Token Time-to-Live** | A cap — often 30 days — that applies **regardless of the policy above.** A connection idle beyond it stops working even with "valid until revoked" set. |
+| **Refresh Token Policy** | **Planasonix Connect:** installed as *Expire refresh token after specific time*, 365 days; leave it as installed and reconnect before it runs out. The installed app has no *valid until revoked* option. **Your own app (Advanced):** a classic Connected App can offer *Refresh token is valid until revoked*, the durable choice; *expire after N* or *if not used for N* will eventually break an unattended connection. |
+| **Limit Idle Refresh Token Time-to-Live** | A cap that applies **regardless of the policy above.** From 4 November 2026 Salesforce enforces a 30-day idle time-to-live on production refresh tokens (Winter '27). A connection idle beyond it stops working even when its policy has not yet expired; each successful refresh resets the window. |
 | **Enable Refresh Token Rotation** | Each refresh issues a new refresh token and invalidates the previous one. |
 
-**What this means in practice:** an OAuth connection must be *used* within the idle window, or it will need re-authorising. If your pipelines run less often than that window, **use JWT Bearer instead.**
+**What this means in practice:** an OAuth connection must be *used* within the idle window, and a Planasonix Connect connection should be reconnected within 365 days of connecting (the installed policy), or it will need re-authorising. If your pipelines run less often than the idle window, or must never need a person to reconnect, **use JWT Bearer instead.**
 
 To re-authorise: open the connection in Planasonix and click **Reconnect**.
 
@@ -278,7 +485,7 @@ Salesforce distinguishes most failures only by `error_description`, so match on 
 
 | Message | Cause | Fix |
 |---|---|---|
-| `app_not_found` — *"External client app is not installed in this org"* | The audience is a login host. Since Spring '26, `login.salesforce.com` and `test.salesforce.com` are **not** valid JWT audiences. | Use your org's My Domain host (§2.3). The app is installed; Salesforce looked in the wrong place. |
+| `app_not_found` — *"External client app is not installed in this org"* | Salesforce did not find the app in the org it looked in. Check that the app exists in **this** org (a sandbox has its own apps and keys) and that the **Login type** matches the org — Sandbox for a sandbox. | Production and Sandbox login hosts **are** valid JWT audiences (a sandbox sign-in with `https://test.salesforce.com` was measured on 2026-09-15); My Domain also works. Earlier versions of this guide said login hosts were invalid; that was an inference, not a measurement. |
 | `invalid_request` — *"refresh_token scope is required and the connected app should be installed and preauthorized"* | The `refresh_token, offline_access` scope is not selected. | Add it (§4.3). Keep `api` as well. |
 | `invalid_grant` — *"user hasn't approved this consumer"* | **The username does not match a user in this org**, or Permitted Users is set to self-authorize and the user has never approved the app. | Check the username against Setup → Users **character by character**. A sandbox name can differ from your org name by a single transposition. |
 | `invalid_app_access` — *"user is not admin approved to access this app"* | The user exists, but the app is not granted to their profile or permission set. | §4.4 — including the Apex step, which has no user interface on an External Client App. |
@@ -286,6 +493,7 @@ Salesforce distinguishes most failures only by `error_description`, so match on 
 | `invalid_grant` — *"audience is invalid"* | The audience does not match this org. | Use this org's My Domain host, not another org's. |
 | `invalid_client_id` | The Consumer Key does not belong to an app in this org. | Re-copy it (§4.5). Sandbox and production apps have different keys. |
 | `sf:MUTUAL_AUTHENTICATION_FAILED` | A mutual-auth user authenticated on port 443 instead of 8443. | Mutual TLS requires port 8443. |
+| **Saving is refused: *"loginType is my_domain but no My Domain host was supplied"*** | The connection claims a My Domain login and carries no host to use. | Supply the org's My Domain host (§2.3), **or** set Environment to Production or Sandbox — either answer is valid, and the message names both because either fixes it. This is refused at save rather than later, so you meet it on the form and not on a table click. |
 | **HTTP 403 with no error body at all** | The client certificate was not presented, or was not accepted, on port 8443. **This is not an authentication failure** — the request was refused before any username or password was read. | Check the certificate chain and that the certificate is uploaded to Certificate and Key Management. |
 
 **If you see a message that is not in this table, send us the `error` and `error_description` exactly as Salesforce wrote them.** Those two lines are the diagnosis; a plausible-sounding guess based on anything else will usually point at the wrong setting.
@@ -311,8 +519,8 @@ This checklist covers JWT Bearer only. Mutual TLS has different prerequisites �
 [ ] BOTH scopes selected: api  AND  refresh_token, offline_access
 [ ] Enable JWT Bearer Flow ticked, certificate uploaded beneath it
 [ ] "Issue JSON Web Token (JWT)-based access tokens for named users" left OFF
+[ ] Integration user's profile or permission set assigned to the app (BEFORE the next line)
 [ ] Policies tab -> App Authorization = Admin approved users are pre-authorized
-[ ] Integration user's profile or permission set assigned to the app
 [ ] Consumer Key copied (the secret is not needed)
 [ ] Test Connection passes
 ```
