@@ -76,6 +76,12 @@
             ]
           },
           {
+            "group": "Destinations",
+            "pages": [
+              "aurora/query-from-aurora"
+            ]
+          },
+          {
             "group": "Pipelines",
             "pages": [
               "pipelines/overview",
@@ -265,7 +271,8 @@
             "group": "Billing",
             "pages": [
               "settings/plans-and-pricing",
-              "settings/usage"
+              "settings/usage",
+              "billing/analytics-pack-credits"
             ]
           }
         ]
