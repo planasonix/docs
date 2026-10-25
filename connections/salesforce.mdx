@@ -15,13 +15,13 @@ Every value in the JWT section was verified against a live Salesforce org. Anyth
 
 ## Quick start: Planasonix Connect (recommended)
 
-**Planasonix Connect is the Salesforce app Planasonix publishes, so you do not create an app of your own.** Your Salesforce admin installs it once per org; after that, anyone who may connect clicks **Connect with Salesforce** in Planasonix. It contains no code and no data: only the OAuth app that lets Planasonix ask your org for access.
+**Planasonix Connect is the Salesforce app Planasonix publishes, so you do not create an app of your own.** Your Salesforce admin installs it once per org; after that, anyone who may connect clicks **Connect with Salesforce** in Planasonix. It contains no code and no data: only the two OAuth apps (Planasonix Connect, and Planasonix JWT for JWT sign-in) that let Planasonix ask your org for access.
 
-**Package version:** 0.1 (released). The links below install exactly that version.
+**Package version:** 0.2 (released). The links below install exactly that version.
 
 1. **A Salesforce admin installs it, once per org.** Open the link for your org type while signed in as an administrator:
-   - **Production or Developer Edition:** `https://login.salesforce.com/packaging/installPackage.apexp?p0=04tgK000000R0qLQAS`
-   - **Sandbox:** `https://test.salesforce.com/packaging/installPackage.apexp?p0=04tgK000000R0qLQAS`
+   - **Production or Developer Edition:** `https://login.salesforce.com/packaging/installPackage.apexp?p0=04tgK000000VqFFQA0`
+   - **Sandbox:** `https://test.salesforce.com/packaging/installPackage.apexp?p0=04tgK000000VqFFQA0`
 
    Choose **Install for Admins Only** (or **Install for All Users**; the app's own policies still decide who may use it) and finish the install.
 2. **Leave the refresh token policy as installed, and plan to reconnect within 365 days.** The package installs the app with **Refresh Token Policy** set to **Expire refresh token after specific time**, 365 days. Do not change it. The installed app offers only *Immediately expire refresh token*, *Expire refresh token after specific time* and *Expire refresh token if not used for specific time*; there is no *valid until revoked* option. So plan to reconnect a **Connect with Salesforce** connection within 365 days of making it: open the connection in Planasonix and click **Reconnect**. Treat 365 days as the planning figure, not an exact date: Refresh Token Rotation, or an admin changing the policy, can make the real expiry differ. When the refresh token does expire, every scheduled sync on that connection fails until someone reconnects. Your org may also cap idle tokens (§6). For unattended pipelines that must never need re-authorising, use JWT Bearer, which issues no refresh token.
