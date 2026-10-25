@@ -54,7 +54,6 @@
               "nodes/z-order-sort",
               "managed-lakehouse/column-stats",
               "managed-lakehouse/catalog-sync",
-              "aurora/query-from-aurora",
               "managed-lakehouse/table-explorer",
               "nodes/managed-lakehouse-transforms"
             ]
@@ -74,6 +73,12 @@
               "connections/salesforce",
               "connections/ai-providers",
               "connections/credentials"
+            ]
+          },
+          {
+            "group": "Destinations",
+            "pages": [
+              "aurora/query-from-aurora"
             ]
           },
           {
